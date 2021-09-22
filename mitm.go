@@ -117,6 +117,10 @@ type Proxy struct {
 	// Transport is the low-level transport to perform proxy requests.
 	// If nil, http.DefaultTransport is used.
 	Transport http.RoundTripper
+
+	// ForceUseCustomTransport if true, indicates that Transport will be used any way operating HTTPs connections
+	// instead of (if false) using wrapping TLS dial. Useful when need to library used as HTTPs -> ? transport proxy
+	ForceUseCustomTransport bool
 }
 
 var (
@@ -179,13 +183,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	cc, err := p.tlsDial(req.Host, sc.ServerName)
-	if err != nil {
-		log.Println("tlsDial:", err)
-		io.WriteString(cn, noUpstreamHeader)
-		return
+	if p.Transport == nil && p.ForceUseCustomTransport {
+		cc, err := p.tlsDial(req.Host, sc.ServerName)
+		if err != nil {
+			log.Println("tlsDial:", err)
+			io.WriteString(cn, noUpstreamHeader)
+			return
+		}
+		p.proxyMITM(sc, cc)
+	} else {
+		p.proxyMITMCustom(sc)
 	}
-	p.proxyMITM(sc, cc)
 }
 
 // SkipNone doesn't skip any request and proxy all of them.
@@ -292,6 +300,18 @@ func (p *Proxy) proxyMITM(upstream, downstream net.Conn) {
 	rp := &httputil.ReverseProxy{
 		Director:      HTTPSDirector,
 		Transport:     &http.Transport{DialTLS: dial},
+		FlushInterval: p.FlushInterval,
+	}
+	ch := make(chan struct{})
+	wc := &onCloseConn{upstream, func() { ch <- struct{}{} }}
+	http.Serve(&oneShotListener{wc}, p.Wrap(rp))
+	<-ch
+}
+
+func (p *Proxy) proxyMITMCustom(upstream net.Conn) {
+	rp := &httputil.ReverseProxy{
+		Director:      HTTPSDirector,
+		Transport:     p.Transport,
 		FlushInterval: p.FlushInterval,
 	}
 	ch := make(chan struct{})
