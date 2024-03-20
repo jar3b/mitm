@@ -1,5 +1,5 @@
 module github.com/jar3b/mitm
 
-go 1.20
+go 1.22.1
 
-require golang.org/x/net v0.11.0
+require golang.org/x/net v0.22.0
